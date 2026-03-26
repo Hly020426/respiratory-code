@@ -34,11 +34,11 @@ mediation_analysis.R
 
 Performs the mediation and multi-omics analysis workflow, including biomarker screening, candidate mediator selection, and mediation analysis.
 
-Recommendation.R
+recommendation_analysis.R
 
 Generates optimized 24-hour behavioral recommendations based on disease-specific risk patterns.
 
-MR_analysis.R
+mr_analysis.R
 
 Runs batch two-sample Mendelian randomization analyses between movement-related exposures and respiratory disease outcomes.
 
