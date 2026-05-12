@@ -60,97 +60,101 @@ map_dt[, hour := hour_raw %% 24]
 map_dt[, idx := NULL]
 
 # ====================== 4. Long-format movement data ======================
-movement_long <- melt(
-  movement_data_raw,
-  id.vars = "ID",
-  measure.vars = behavior_cols,
-  variable.name = "original_col",
-  value.name = "value"
-)
+movement_long <- melt(movement_data_raw,
+                      id.vars="ID",
+                      measure.vars=behavior_cols,
+                      variable.name="original_col",
+                      value.name="value")
+
+movement_long <- merge(movement_long, map_dt, by="original_col")
+movement_long[, total := sum(value), by=.(ID,day_type,hour)]
+movement_long[, prop := fifelse(total==0,0,value/total)]
 
 movement_long <- merge(movement_long, map_dt, by = "original_col")
 movement_long[, total := sum(value), by = .(ID, day_type, hour)]
 movement_long[, prop := fifelse(total == 0, 0, value / total)]
 
 # ====================== 5. Direction by disease ======================
-get_direction <- function(disease_code) {
-  dt <- risk_data_raw[, .(ID, risk = get(disease_code))]
+get_direction <- function(disease_code){
+  
+  dt <- risk_data_raw[,.(ID, risk=get(disease_code))]
   dt <- dt[!is.na(risk)]
   
-  low_t <- quantile(dt$risk, risk_percent)
-  high_t <- quantile(dt$risk, 1 - risk_percent)
-  dt[, grp := fifelse(risk <= low_t, "Low", "High")]
+  low_t  <- quantile(dt$risk, risk_percent)
+  high_t <- quantile(dt$risk, 1-risk_percent)
+  dt[, grp := fifelse(risk<=low_t,"Low","High")]
   
-  mv <- merge(movement_long, dt[, .(ID, grp)], by = "ID")
+  mv <- merge(movement_long, dt[,.(ID,grp)], by="ID")
   
-  low_p <- mv[grp == "Low", .(P_low = mean(prop)), by = .(day_type, hour, activity)]
-  high_p <- mv[grp == "High", .(P_high = mean(prop)), by = .(day_type, hour, activity)]
+  low_p  <- mv[grp=="Low",  .(P_low=mean(prop)),  by=.(day_type,hour,activity)]
+  high_p <- mv[grp=="High", .(P_high=mean(prop)), by=.(day_type,hour,activity)]
   
-  opt <- merge(low_p, high_p, by = c("day_type", "hour", "activity"))
+  opt <- merge(low_p, high_p, by=c("day_type","hour","activity"))
   opt[, delta := P_low - P_high]
   
-  opt[, dir := fifelse(
-    abs(delta) < threshold,
-    "Retain",
-    fifelse(delta > 0, "Strengthen", "Compress")
-  )]
+  opt[, dir :=
+        fifelse(abs(delta)<threshold,"Retain",
+                fifelse(delta>0,"Strengthen","Compress"))]
   
-  opt[, .(day_type, hour, activity, dir)]
+  return(opt[,.(day_type,hour,activity,dir)])
 }
 
 # ====================== 6. Optimize one disease ======================
-optimize_one_disease <- function(dir_dt) {
-  movement_data <- copy(movement_data_raw)
-  population_avg <- movement_data[, lapply(.SD, mean), .SDcols = behavior_cols]
+optimize_one_disease <- function(dir_dt){
   
-  adjust_proportion <- function(p, dir) {
-    if (dir == "Strengthen") return(p * (1 + optimize_strength))
-    if (dir == "Compress") return(p * (1 - optimize_strength))
+  movement_data <- copy(movement_data_raw)
+  population_avg <- movement_data[, lapply(.SD, mean), .SDcols=behavior_cols]
+  
+  adjust_proportion <- function(p, dir){
+    if(dir=="Strengthen") return(p*(1+optimize_strength))
+    if(dir=="Compress")   return(p*(1-optimize_strength))
     return(p)
   }
   
-  for (i in 1:nrow(map_dt)) {
+  for(i in 1:nrow(map_dt)){
     colname <- map_dt$original_col[i]
-    act <- map_dt$activity[i]
-    hr <- map_dt$hour[i]
+    act  <- map_dt$activity[i]
+    hr   <- map_dt$hour[i]
     dayt <- map_dt$day_type[i]
     
-    dir_row <- dir_dt[day_type == dayt & hour == hr & activity == act]
-    if (nrow(dir_row) == 0) next
+    dir_row <- dir_dt[day_type==dayt & hour==hr & activity==act]
+    if(nrow(dir_row)==0) next
     
     movement_data[, (colname) := adjust_proportion(get(colname), dir_row$dir)]
-    movement_data[, (colname) := hybrid_weight_opt * get(colname) +
-                    hybrid_weight_pop * population_avg[[colname]]]
+    movement_data[, (colname) := hybrid_weight_opt*get(colname) +
+                    hybrid_weight_pop*population_avg[[colname]]]
   }
   
-  for (dayt in c("Weekday", "Weekend")) {
-    for (hr in 0:23) {
-      cols_now <- map_dt[day_type == dayt & hour == hr, original_col]
+  for(dayt in c("Weekday","Weekend")){
+    for(hr in 0:23){
+      
+      cols_now <- map_dt[day_type==dayt & hour==hr, original_col]
       tmp <- movement_data[, ..cols_now]
-      setnames(tmp, c("SB", "LPA", "MVPA", "Sleep"))
+      setnames(tmp, c("SB","LPA","MVPA","Sleep"))
       
       s <- rowSums(tmp)
-      tmp <- tmp / ifelse(s == 0, 1, s)
+      tmp <- tmp / ifelse(s==0,1,s)
       
-      if (hr %in% night_hours) {
+      if(hr %in% night_hours){
         tmp$Sleep <- pmax(tmp$Sleep, sleep_min_opt)
-        tmp$MVPA <- pmin(tmp$MVPA, mvpa_night_max_opt)
+        tmp$MVPA  <- pmin(tmp$MVPA, mvpa_night_max_opt)
         
         remain <- 1 - tmp$Sleep - tmp$MVPA
         remain[remain < 0] <- 0
         
         other_sum <- tmp$SB + tmp$LPA
-        tmp$SB <- remain * tmp$SB / ifelse(other_sum == 0, 1, other_sum)
-        tmp$LPA <- remain * tmp$LPA / ifelse(other_sum == 0, 1, other_sum)
+        tmp$SB  <- remain * tmp$SB/ifelse(other_sum==0,1,other_sum)
+        tmp$LPA <- remain * tmp$LPA/ifelse(other_sum==0,1,other_sum)
+        
       } else {
         tmp$SB <- pmin(tmp$SB, sb_day_max_opt)
         
         remain <- 1 - tmp$SB
         other_sum <- tmp$LPA + tmp$MVPA + tmp$Sleep
         
-        tmp$LPA <- remain * tmp$LPA / ifelse(other_sum == 0, 1, other_sum)
-        tmp$MVPA <- remain * tmp$MVPA / ifelse(other_sum == 0, 1, other_sum)
-        tmp$Sleep <- remain * tmp$Sleep / ifelse(other_sum == 0, 1, other_sum)
+        tmp$LPA   <- remain * tmp$LPA/ifelse(other_sum==0,1,other_sum)
+        tmp$MVPA  <- remain * tmp$MVPA/ifelse(other_sum==0,1,other_sum)
+        tmp$Sleep <- remain * tmp$Sleep/ifelse(other_sum==0,1,other_sum)
       }
       
       tmp <- tmp / rowSums(tmp)
@@ -158,15 +162,15 @@ optimize_one_disease <- function(dir_dt) {
     }
   }
   
-  movement_data
+  return(movement_data)
 }
 
 # ====================== 7. Disease-specific recommendations ======================
-cat("Generating disease-specific recommendations...\n")
+cat("🔄 Generating disease-specific recommendations...\n")
 disease_recommend_list <- list()
 
-for (d in disease_cols) {
-  cat("  ->", d, "\n")
+for(d in disease_cols){
+  cat("   →", d, "\n")
   dir_dt <- get_direction(d)
   rec_dt <- optimize_one_disease(dir_dt)
   rec_dt[, disease := d]
@@ -174,56 +178,52 @@ for (d in disease_cols) {
 }
 
 all_recommend_dt <- rbindlist(disease_recommend_list)
-
 # ====================== 8. Disease weights ======================
-disease_weight_dt <- melt(
-  group_dt,
-  id.vars = "ID",
-  variable.name = "disease",
-  value.name = "has_disease"
-)[has_disease == 1]
+disease_weight_dt <- melt(group_dt,
+                          id.vars="ID",
+                          variable.name="disease",
+                          value.name="has_disease")[has_disease==1]
 
-disease_weight_dt <- disease_weight_dt[, .N, by = disease]
-disease_weight_dt[, weight := N / sum(N)]
+disease_weight_dt <- disease_weight_dt[, .N, by=disease]
+disease_weight_dt[, weight := N/sum(N)]
 
-all_recommend_dt <- merge(
-  all_recommend_dt,
-  disease_weight_dt[, .(disease, weight)],
-  by = "disease"
-)
+all_recommend_dt <- merge(all_recommend_dt,
+                          disease_weight_dt[,.(disease,weight)],
+                          by="disease")
 
-all_recommend_dt[, weight_norm := weight / sum(weight), by = ID]
+# ⭐ 每个ID内归一化权重
+all_recommend_dt[, weight_norm := weight / sum(weight), by=ID]
 
-final_recommend <- all_recommend_dt[
-  , lapply(.SD, weighted.mean, w = weight_norm),
-  by = ID,
-  .SDcols = behavior_cols
-]
+final_recommend <- all_recommend_dt[, lapply(.SD, weighted.mean, w=weight_norm),
+                                    by=ID,
+                                    .SDcols=behavior_cols]
 
 # ====================== 9. Add healthy participants back ======================
 healthy_ids <- setdiff(movement_data_raw$ID, final_recommend$ID)
 
-if (length(healthy_ids) > 0) {
+if(length(healthy_ids) > 0){
   healthy_dt <- movement_data_raw[ID %in% healthy_ids]
-  final_recommend <- rbind(final_recommend, healthy_dt, fill = TRUE)
+  final_recommend <- rbind(final_recommend, healthy_dt, fill=TRUE)
 }
 
 # ====================== 10. Final normalization ======================
-for (dayt in c("Weekday", "Weekend")) {
-  for (hr in 0:23) {
-    cols_now <- map_dt[day_type == dayt & hour == hr, original_col]
+for(dayt in c("Weekday","Weekend")){
+  for(hr in 0:23){
+    cols_now <- map_dt[day_type==dayt & hour==hr, original_col]
     final_recommend[, (cols_now) := {
       tmp <- .SD
       tmp / rowSums(tmp)
-    }, .SDcols = cols_now]
+    }, .SDcols=cols_now]
   }
 }
+
 
 setnames(final_recommend, "ID", "Participant ID")
 
 all_cols <- names(final_recommend)
 cols_except_id <- setdiff(all_cols, "Participant ID")
 new_col_order <- c(cols_except_id, "Participant ID")
+
 setcolorder(final_recommend, new_col_order)
 
 # ====================== 11. Export ======================
