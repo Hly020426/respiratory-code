@@ -191,7 +191,6 @@ all_recommend_dt <- merge(all_recommend_dt,
                           disease_weight_dt[,.(disease,weight)],
                           by="disease")
 
-# ⭐ 每个ID内归一化权重
 all_recommend_dt[, weight_norm := weight / sum(weight), by=ID]
 
 final_recommend <- all_recommend_dt[, lapply(.SD, weighted.mean, w=weight_norm),
